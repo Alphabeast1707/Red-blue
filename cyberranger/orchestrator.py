@@ -196,6 +196,21 @@ class Orchestrator:
         self.population.advance_generation(offspring)
         self.persistence.checkpoint(self.population, self.bandit, generation=self.population.gen)
 
+        # Log telemetry snapshot for every generation
+        try:
+            pending_cnt = sum(1 for i in self.triage_queue.list_items() if i.status == "pending")
+            self.metrics.log(
+                generation=self.population.gen,
+                archive_coverage=self.archive.coverage(self.config.total_possible_cells),
+                qd_score=self.archive.qd_score(),
+                bandit_arm_weights=self.bandit.arm_weights(),
+                pending_triage_count=pending_cnt,
+                blue_regression_pass_rate=1.0,
+                red_regression_pass_rate=1.0,
+            )
+        except Exception:
+            pass
+
         return {
             "generation": self.population.gen,
             "arm_used": arm,

@@ -190,12 +190,40 @@ async function loadLearning() {
   $("#label-sources").innerHTML = sourceEntries.length ? sourceEntries.map(([source,count])=>`<span class="source-chip">${escapeHtml(source.replaceAll("_"," "))} · ${number(count)}</span>`).join("") : '<span class="quiet-text">No source-traced labels recorded.</span>';
 }
 async function loadTelemetry() {
-  const data = await api("/api/metrics?limit=50");
+  const [data, modelMetrics] = await Promise.all([
+    api("/api/metrics?limit=50"),
+    api("/api/model/metrics").catch(() => null)
+  ]);
+
+  if (modelMetrics) {
+    if ($("#model-stat-accuracy")) $("#model-stat-accuracy").textContent = percent(modelMetrics.accuracy);
+    if ($("#model-stat-recall")) $("#model-stat-recall").textContent = percent(modelMetrics.recall);
+    if ($("#model-stat-precision")) $("#model-stat-precision").textContent = percent(modelMetrics.precision);
+    if ($("#model-stat-f1")) $("#model-stat-f1").textContent = number(modelMetrics.f1_score, 3);
+    if ($("#model-note-tested")) $("#model-note-tested").textContent = `${number(modelMetrics.tested_cases)} tested traffic cases`;
+    if ($("#model-eval-cases")) $("#model-eval-cases").textContent = `${number(modelMetrics.tested_cases)} cases`;
+
+    if ($("#bar-accuracy")) $("#bar-accuracy").style.width = percent(modelMetrics.accuracy);
+    if ($("#val-accuracy")) $("#val-accuracy").textContent = percent(modelMetrics.accuracy);
+    if ($("#bar-recall")) $("#bar-recall").style.width = percent(modelMetrics.recall);
+    if ($("#val-recall")) $("#val-recall").textContent = percent(modelMetrics.recall);
+    if ($("#bar-precision")) $("#bar-precision").style.width = percent(modelMetrics.precision);
+    if ($("#val-precision")) $("#val-precision").textContent = percent(modelMetrics.precision);
+    if ($("#bar-f1")) $("#bar-f1").style.width = percent(modelMetrics.f1_score);
+    if ($("#val-f1")) $("#val-f1").textContent = number(modelMetrics.f1_score, 3);
+
+    const cm = modelMetrics.confusion_matrix || {};
+    if ($("#cm-tp")) $("#cm-tp").textContent = number(cm.malicious?.malicious || 0);
+    if ($("#cm-tn")) $("#cm-tn").textContent = number(cm.benign?.benign || 0);
+    if ($("#cm-fp")) $("#cm-fp").textContent = number(cm.benign?.malicious || 0);
+    if ($("#cm-fn")) $("#cm-fn").textContent = number(cm.malicious?.benign || 0);
+  }
+
   $("#metrics-table").innerHTML = data.length ? [...data].reverse().map(m=>`<tr><td>${escapeHtml(m.timestamp ? new Date(m.timestamp).toLocaleString() : "—")}</td><td>${number(m.generation)}</td><td>${percent(m.archive_coverage)}</td><td>${number(m.qd_score,2)}</td><td>${percent(m.blue_regression_pass_rate,0)}</td><td>${number(m.pending_triage_count)}</td></tr>`).join("") : '<tr><td colspan="6" class="empty-row">No snapshots recorded yet. Run a generation to start the log.</td></tr>';
   const chart = $("#coverage-chart");
   if (!data.length) { chart.innerHTML = '<p class="empty-row">No measured archive coverage yet.</p>'; return; }
   const points = data.slice(-30), maxGen = Math.max(1,...points.map(x=>Number(x.generation)||0));
-  chart.innerHTML = points.map(item=>`<div class="chart-bar" style="height:${Math.max(3,Number(item.archive_coverage||0)*100)}%" title="Generation ${number(item.generation)} · ${percent(item.archive_coverage)}"><span>${number(item.generation) === number(maxGen) || points.length < 9 ? number(item.generation) : ""}</span></div>`).join("");
+  chart.innerHTML = points.map(item=>`<div class="chart-bar" style="height:${Math.max(6,Number(item.archive_coverage||0)*100)}%" title="Generation ${number(item.generation)} · ${percent(item.archive_coverage)}"><span>${number(item.generation) === number(maxGen) || points.length < 9 ? number(item.generation) : ""}</span></div>`).join("");
 }
 async function loadElites() {
   const data = await api("/api/hall-of-fame"); $("#elite-count").textContent = number(data.length);
