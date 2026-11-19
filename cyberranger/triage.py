@@ -4,6 +4,7 @@ from typing import Any, Optional
 import uuid
 
 from cyberranger.genome import BehaviorDescriptor, Genome, TrialResult
+from cyberranger.corpus import TrafficCorpus
 
 
 @dataclass
@@ -54,6 +55,7 @@ class TriageQueue:
         self.items: dict[str, TriageItem] = {}
         self._consumed_confirmed_ids: set[str] = set()
         self.persistence = persistence_store
+        self.corpus = TrafficCorpus()
 
         if self.persistence:
             try:
@@ -147,6 +149,8 @@ class TriageQueue:
                 )
             except Exception:
                 pass
+        if new_status == "confirmed":
+            self.corpus.label_trial(item.genome.id, "malicious", reviewer_id)
         return item
 
     def pull_confirmed_since_last_pass(self) -> list[TriageItem]:

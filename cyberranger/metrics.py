@@ -3,12 +3,16 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_METRICS_PATH = PROJECT_ROOT / "data" / "runtime" / "metrics.jsonl"
+
 
 class MetricsLogger:
     """Logs system metrics to JSON lines (metrics.jsonl) and tracks archive plateau (§13)."""
 
     def __init__(self, log_path: Optional[Path | str] = None):
-        self.log_path = Path(log_path) if log_path else Path("metrics.jsonl")
+        self.log_path = Path(log_path) if log_path else DEFAULT_METRICS_PATH
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.history: list[dict[str, Any]] = []
 
     def log(

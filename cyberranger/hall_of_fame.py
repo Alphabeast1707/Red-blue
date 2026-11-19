@@ -40,6 +40,10 @@ class HallOfFame:
         confirmed_by: str = "security_analyst",
     ) -> HallOfFameEntry:
         """Add a confirmed red elite exploit to the regression suite."""
+        for existing in self.entries:
+            if existing.entry_type == "red_elite" and existing.genome and existing.genome.id == genome.id:
+                return existing
+
         entry = HallOfFameEntry(
             id=str(uuid.uuid4()),
             entry_type="red_elite",

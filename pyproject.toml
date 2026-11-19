@@ -18,6 +18,9 @@ dependencies = [
     "anthropic>=0.9.0"
 ]
 
+[project.optional-dependencies]
+laya = ["laya==0.4.32"]
+
 [project.scripts]
 cyberranger = "scripts.cyberranger_cli:main"
 

@@ -24,6 +24,14 @@ class EvasionTechnique(str, Enum):
                                             # when this value is used
 
 
+SUPPORTED_DVWA_CLASSES = (
+    VulnClass.SQLI,
+    VulnClass.XSS,
+    VulnClass.COMMAND_INJECTION,
+    VulnClass.PATH_TRAVERSAL,
+)
+
+
 @dataclass
 class Genome:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -69,13 +77,14 @@ class TrialResult:
     response_signature: str          # hashable fingerprint of the raw response, for dedup
     latency_ms: int
     raw_response_excerpt: str        # truncated, for triage review only
+    request_evidence: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TrialResult":
-        return cls(**data)
+        return cls(**{**data, "request_evidence": data.get("request_evidence")})
 
 
 @dataclass

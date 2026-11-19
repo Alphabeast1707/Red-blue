@@ -147,6 +147,14 @@ def cmd_triage(args):
         else:
             print(f"[-] Item {args.item_id} not found.")
 
+    elif args.triage_action == "auto":
+        from cyberranger.auto_triage import AutoTriageVerifier
+        from cyberranger.hall_of_fame import HallOfFame
+        hof = HallOfFame(persistence_store=store)
+        verifier = AutoTriageVerifier()
+        counts = verifier.auto_triage_all(triage_queue=triage, hall_of_fame=hof)
+        print(f"[+] Automated Triage complete: {counts['confirmed']} Red Elites confirmed, {counts['rejected']} rejected out of {counts['total']} processed.")
+
 
 def cmd_serve(args):
     """Launch the Mission Control Web UI."""
@@ -196,6 +204,8 @@ def main():
     t_rej.add_argument("item_id", help="UUID of triage item")
     t_rej.add_argument("--note", default="Rejected via CLI", help="Reviewer note")
     t_rej.add_argument("--reviewer", default="cli_analyst", help="Reviewer ID")
+
+    t_auto = triage_sub.add_parser("auto", help="Automatically evaluate all pending triage items and confirm Red Elites")
 
     p_triage.set_defaults(func=cmd_triage)
 

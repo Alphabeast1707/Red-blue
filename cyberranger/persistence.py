@@ -7,7 +7,8 @@ from cyberranger.genome import Genome
 from cyberranger.operators.bandit import OperatorBandit
 from cyberranger.population import Population
 
-DEFAULT_DB_PATH = Path("checkpoints.db")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "runtime" / "checkpoints.db"
 
 
 class PersistenceStore:
@@ -18,6 +19,7 @@ class PersistenceStore:
         self._init_db()
 
     def _init_db(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""

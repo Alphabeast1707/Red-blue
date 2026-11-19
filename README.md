@@ -1,128 +1,109 @@
 # CyberRanger
 
-**Red-vs-Blue Co-Evolutionary Security Research System**
+CyberRanger is a local red/blue research loop for the intentionally vulnerable DVWA app. Red candidates are generated from the checked-in DVWA grammar and safe transforms. The optional Gemini strategy planner selects an abstract family/evasion niche; it does not write payloads. Every trial is sent only to the Docker service `dvwa-target`. Laya classifies the observed request on the blue side.
 
-CyberRanger is an automated, quality-diversity security testing platform featuring MAP-Elites search on the red side, continual random forest learning on the blue side, human-in-the-loop analyst triage, and a strictly isolated Docker sandbox boundary.
+The project does not ship a trained CyberRanger detector or a verified benchmark result. The checked-in info file's “94% recall vs 33%” statement is a reference claim, not a measured result from this repository. No synthetic benign examples are used for training.
 
----
+## What is implemented
 
-## 🛡️ Core Architecture
+- Internal-only Docker bridge for DVWA, Blue Detector, and the CyberRanger runner. A separate authenticated Gemini bridge has internet egress; the runner cannot access the internet directly.
+- Mission-control frontend with live service health, run controls, triage review, MAP-Elites archive, corpus and model status, telemetry, and Hall of Fame.
+- The Gemini bridge accepts only bounded archive counts and enum feedback, uses structured output, and never receives request bodies, response excerpts, or response hashes. The API key is mounted into that bridge only through the ignored local `.env` file.
+- Candidate scoring from real DVWA HTTP responses, with response hash/excerpt, status, request details, timestamp, and latency recorded as evidence.
+- High-confidence malicious labels are recorded only when the actual response contains a direct compromise signal (for example, a multi-row SQL result, command identity output, or sensitive file contents). Other candidates stay unlabeled until human triage.
+- Operator-attested benign controls are captured from successful HTTP responses from the running local DVWA. These are controlled test transactions, not user telemetry.
+- The local Blue Detector uses [Laya](https://github.com/NandhaKishorM/laya) as a typed benign/malicious decision model. It returns HTTP 503 when weights are missing or the model cannot load; it never reports “not flagged” as a fallback.
+- Fine-tuning reads only evidence-backed rows from `data/traffic.jsonl`, splits by distinct request text, and reports held-out evaluation through Laya's trainer.
 
-```
-                                  +---------------------------------------+
-                                  |         HOST ORCHESTRATOR             |
-                                  |   MAP-Elites Archive (Grid / QD)      |
-                                  |   UCB1 Mutation Bandit                |
-                                  |   Hall of Fame & Regression Suite     |
-                                  |   SQLite Store (checkpoints.db)       |
-                                  +-------------------+-------------------+
-                                                      |
-                          External LLM API (Optional) | Telemetry / Metrics
-                          [claude-sonnet-4-6]         | (metrics.jsonl)
-                                                      v
-      ====================== STRICT SANDBOX BOUNDARY ======================
-      Docker User-Defined Bridge: cyberranger_internal (internal: true)
-      No default route, zero inbound/outbound external network access.
-      ---------------------------------------------------------------------
-            |                                           |
-            v                                           v
-      +---------------+ Mirror Traffic          +---------------+
-      |  dvwa-target  |------------------------>| blue-detector |
-      | (Target App)  |                         | (ML Detector) |
-      +---------------+                         +---------------+
-      =====================================================================
-```
+## Requirements
 
-1. **Safety Boundary (§0)**: All attack traffic is contained inside `cyberranger_internal` (`internal: true`). Targets are hardcoded to the internal Docker service name `dvwa-target`.
-2. **Quality-Diversity Search (§8)**: MAP-Elites archive partitioning the behavior space into cells indexed by `(VulnClass, InjectionPointCategory, EvasionTechnique, DetectorOutcome)`.
-3. **Adaptive Operator Bandit (§4)**: UCB1 multi-armed bandit dynamically selecting among:
-   - **Grammar mutation**: BNF-style grammar expansions parameterized by target fixtures.
-   - **Crossover**: Structural splicing of parent payload templates.
-   - **LLM semantic mutation**: Abstract structural niche proposal rendered deterministically.
-4. **Scoring (§7)**: Response-diff compromise signals (SQLi multi-row dumps, unescaped XSS tokens, command output, LFI indicators) and blue-side detection confidence.
-5. **Human Triage Portal (§9)**: Analyst review portal and REST API to promote candidate payloads to "confirmed" Red Elites.
-6. **Blue Continual Learner (§10)**: Random forest retrained on confirmed exploits with hot-reloadable model artifacts.
-7. **Hall of Fame & Regression (§11)**: Archives historical Red Elites and Blue Snapshots, continuously verifying detector stability against regression floors.
-8. **Mission Control SOC Dashboard (`triage_ui/app.py`)**: Glassmorphic operations interface with interactive MAP-Elites heatmap grid, real-time co-evolution controls, telemetry charts, and payload inspector.
+- macOS/Linux with Python 3.11 or later
+- Docker Desktop / Docker Engine with Compose
+- Network access for the one-time Laya checkpoint download
+- About 1 GB for the English checkpoint and additional space for Python/Docker dependencies
 
----
-
-## 🚀 Quickstart
-
-### 1. Start Sandbox Environment
-```bash
-docker compose up -d
-```
-
-### 2. Run Test Suite
-```bash
-python3 -m pytest tests/ -v
-```
-
-### 3. Launch Mission Control SOC Dashboard
-```bash
-python3 scripts/cyberranger_cli.py serve --port 8501
-# Open http://127.0.0.1:8501 in your browser
-```
-
----
-
-## 💻 Unified CLI Usage (`scripts/cyberranger_cli.py`)
-
-CyberRanger includes a unified command-line tool for operations:
+## Local setup
 
 ```bash
-# Check sandbox status, services health, and archive telemetry
-python3 scripts/cyberranger_cli.py status
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[laya]'
+python scripts/download_laya.py
+cp .env.example .env
+# Set GEMINI_API_KEY and GEMINI_PROXY_TOKEN in .env; generate the token with:
+python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
+chmod 600 .env
 
-# Run co-evolution generation loop
-python3 scripts/cyberranger_cli.py loop --generations 10 --resume
-
-# List pending triage items
-python3 scripts/cyberranger_cli.py triage list --status pending
-
-# Confirm an exploit as a Red Elite
-python3 scripts/cyberranger_cli.py triage confirm <ITEM_ID> --note "Verified SQLi dump"
-
-# Retrain Blue Detector on confirmed exploits
-python3 scripts/cyberranger_cli.py retrain
-
-# Run regression testing against historical Red Elites
-python3 scripts/cyberranger_cli.py regression
-
-# Launch Mission Control Web UI
-python3 scripts/cyberranger_cli.py serve --host 127.0.0.1 --port 8501
+docker compose up --build -d
+python scripts/cyberranger_cli.py status
 ```
 
----
+The model download is stored under `blue_detector/models/laya/`, which is ignored by Git. Open the frontend at [http://127.0.0.1:8501](http://127.0.0.1:8501). The only published host port is loopback-bound and serves the dashboard through a fixed reverse proxy. DVWA, the detector, and runner remain on the internal-only network. Run experiment commands inside `cyberranger-runner`, which reaches only named internal services. DVWA is configured by the sandbox client with its default sandbox credentials and low security level. Do not reuse this setup against any other target.
 
-## 🌐 REST API Endpoints
+To stop the sandbox:
 
-The FastAPI service (`triage_ui/app.py`) provides the following endpoints:
+```bash
+docker compose down
+```
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/` | `GET` | Interactive Mission Control Web Dashboard |
-| `/api/status` | `GET` | Health status of Docker sandbox, DVWA, Blue detector, and co-evolution stats |
-| `/api/archive/matrix` | `GET` | MAP-Elites grid matrix data (Vulnerability Class × Evasion Technique) |
-| `/api/metrics` | `GET` | Historical co-evolution log entries from `metrics.jsonl` |
-| `/api/triage` | `GET` | List triage items with optional `status`, `vuln_class`, and `search` filters |
-| `/api/triage/{id}` | `GET` | Get details for a specific triage item |
-| `/api/triage/{id}` | `POST` | Submit human analyst review (`confirm`, `reject`, `duplicate`) |
-| `/api/triage/batch` | `POST` | Batch review multiple items simultaneously |
-| `/api/orchestrator/step` | `POST` | Trigger a single real-time generation step |
-| `/api/orchestrator/epoch`| `POST` | Trigger an epoch of N generations with live telemetry |
-| `/api/learning/retrain` | `POST` | Trigger Blue detector retraining on confirmed exploits |
-| `/api/learning/regression`| `POST`| Run co-evolutionary regression pass |
-| `/api/hall-of-fame` | `GET` | List historical Red Elites and Blue model snapshots |
+## Collect real observations
 
----
+Capture the project's controlled benign request set. Each example is a real HTTP response from the local DVWA instance and is labeled by the named operator.
 
-## 🗄️ Persistence Schema (`checkpoints.db`)
+```bash
+docker compose exec cyberranger-runner python scripts/capture_benign.py --reviewer your_name
+```
 
-All runtime state persists to SQLite:
-- `checkpoints`: Generation snapshot, bandit arm weights, and population states.
-- `genomes`: Rendered payloads, templates, mutation operators, and metadata.
-- `triage_items`: Analyst review items with status transitions, reviewer notes, and timestamps.
-- `archive_cells`: MAP-Elites cells indexed by behavioral descriptors and fitness scores.
-- `hall_of_fame`: Historical Red Elites and Blue model paths for regression testing.
+Run a small local generation pass. Each successful DVWA request/response is appended as an unlabeled observation. A target or detector outage stops the generation instead of recording a false negative.
+
+```bash
+docker compose exec cyberranger-runner python scripts/cyberranger_cli.py loop --generations 5
+```
+
+Review candidate findings before they become positive training labels:
+
+```bash
+docker compose exec cyberranger-runner python scripts/cyberranger_cli.py triage list --status pending
+docker compose exec cyberranger-runner python scripts/cyberranger_cli.py triage confirm ITEM_ID --reviewer your_name --note "Evidence reviewed"
+```
+
+Confirming a legacy database item without a fresh captured request does not create a training row. Traffic observations and their label provenance are appended to the ignored local file `data/traffic.jsonl`; the existing `checkpoints.db` is not considered a source of truth for new training unless its observations are recaptured and reviewed.
+
+## Train and evaluate Laya on this corpus
+
+Inspect corpus counts and the deterministic held-out split first:
+
+```bash
+docker compose exec cyberranger-runner python scripts/train_laya.py --dry-run
+```
+
+Fine-tune the local English checkpoint and evaluate on the held-out request states:
+
+```bash
+python scripts/train_laya.py --device cpu --freeze-encoder
+```
+
+Run training on the host so Docker's shared memory budget does not kill the fine-tuner. The trainer requires at least 10 distinct evidence-backed observations of each label by default. Lowering that threshold is possible with `--min-per-class`, but a tiny run can overfit and is not evidence of generalization. The training command starts from the downloaded public checkpoint and writes a candidate checkpoint to `blue_detector/models/laya-candidate/`. It does not replace the active model. Compare the candidate against the same held-out observations before promoting it to `blue_detector/models/laya-finetuned/`; use the report emitted by the trainer and do not compare it with unrelated benchmark figures. `--freeze-encoder` reduces memory by fitting only the classification heads.
+
+## Status and regression
+
+```bash
+docker compose exec cyberranger-runner python scripts/cyberranger_cli.py status
+docker compose exec cyberranger-runner python scripts/cyberranger_cli.py regression
+```
+
+The detector's internal `/health` endpoint reports whether the local Laya checkpoint actually loaded; `/detect` returns 503 when it did not. The dashboard's status labels are backed by these live checks and the local traffic corpus; empty datasets are shown as empty rather than filled with sample values.
+
+## Data and labels
+
+`data/traffic.jsonl` is append-only and ignored by Git. A training observation includes the request method, internal DVWA URL, parameters/body, response status, response SHA-256, response excerpt around the submitted payload or concrete compromise marker, observed time, and latency. High-confidence direct response evidence can supply a malicious label with the `deterministic_response_verifier` provenance; other candidates need human triage. Benign labels identify the operator who attested to each controlled benign request. Failed requests, missing responses, and unlabeled candidates are excluded from training. New experiment state uses `data/runtime/checkpoints.db` and `data/runtime/metrics.jsonl`; the pre-existing root-level database/metrics file and earlier unverified local experiment state are not used as live measurements.
+
+The current training corpus is local and user-specific. A fresh checkout starts with no labeled CyberRanger corpus. Meaningful generalization requires more diverse, distinct requests than the small controlled DVWA set; held-out scores should be interpreted with sample counts and class balance.
+
+## Safety boundary
+
+- DVWA, Blue Detector, the experiment runner, and the dashboard backend are connected only to `cyberranger_internal` (`internal: true`).
+- The Gemini bridge validates a fixed strategy request schema and calls only Gemini; it does not proxy arbitrary URLs. The UI gateway only forwards to the dashboard backend and publishes `127.0.0.1:8501`.
+- The red client accepts only the internal Docker service names `http://dvwa-target` and `http://blue-detector:8000`.
+- Laya inference and fine-tuning run locally. The optional strategy planner sends coarse archive/outcome summaries to Gemini; raw response excerpts, request bodies, and response hashes are excluded.
+- Gemini can reject cybersecurity strategy prompts under its safety filters; in that case the operator logs the failure type and uses the local deterministic strategy fallback.

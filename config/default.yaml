@@ -12,7 +12,7 @@ bandit:
   arms: [grammar, crossover, llm_semantic]
 
 archive:
-  vuln_classes: [sqli, xss, command_injection, path_traversal, ssrf]
+  vuln_classes: [sqli, xss, command_injection, path_traversal]
   injection_point_categories: [auth_form, search, url_param, file_upload, cookie]
   evasion_techniques: [none, encoding, case_variation, comment_injection, whitespace_substitution]
   detector_outcomes: [undetected, flagged_low_confidence, flagged_high_confidence]
@@ -28,5 +28,4 @@ metrics:
   backend: jsonlines               # or "wandb"
 
 llm:
-  model: claude-sonnet-4-6
-  max_tokens: 500
+  model: gemini-4-hydrogen

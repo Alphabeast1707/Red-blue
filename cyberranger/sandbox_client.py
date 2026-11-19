@@ -2,11 +2,13 @@ import hashlib
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import urlparse
 import requests
 
 from cyberranger.genome import Genome, TrialResult, VulnClass
-from cyberranger.scoring import score_detection, score_target_compromise
+from cyberranger.scoring import extract_response_excerpt, score_detection, score_target_compromise
 
 
 class SandboxClient:
@@ -14,8 +16,8 @@ class SandboxClient:
 
     def __init__(
         self,
-        target_base_url: str = "http://127.0.0.1:8080",
-        detector_base_url: str = "http://127.0.0.1:8000",
+        target_base_url: str = "http://dvwa-target",
+        detector_base_url: str = "http://blue-detector:8000",
         username: str = "admin",
         password: str = "password",
         security_level: str = "low",
@@ -23,6 +25,12 @@ class SandboxClient:
     ):
         self.target_base_url = target_base_url.rstrip("/")
         self.detector_base_url = detector_base_url.rstrip("/")
+        target = urlparse(self.target_base_url)
+        detector = urlparse(self.detector_base_url)
+        if (target.scheme, target.hostname, target.port) != ("http", "dvwa-target", None):
+            raise ValueError("Target must be the internal Docker service http://dvwa-target")
+        if (detector.scheme, detector.hostname, detector.port) != ("http", "blue-detector", 8000):
+            raise ValueError("Detector must be the internal Docker service http://blue-detector:8000")
         self.username = username
         self.password = password
         self.security_level = security_level
@@ -135,18 +143,18 @@ class SandboxClient:
                 resp = self.session.get(req_url, params=req_params, timeout=10)
 
             else:
-                # Default / SSRF endpoint
-                req_url = f"{self.target_base_url}/vulnerabilities/sqli/"
-                req_params = {"id": payload, "Submit": "Submit"}
-                resp = self.session.get(req_url, params=req_params, timeout=10)
+                raise ValueError(f"DVWA target does not implement {genome.vuln_class.value!r}; refusing to misroute it.")
 
             target_resp_text = resp.text
             target_status_code = resp.status_code
-        except Exception as e:
-            target_resp_text = f"ConnectionError: {str(e)}"
-            target_status_code = 500
+        except requests.RequestException as e:
+            raise RuntimeError("DVWA is unreachable; no trial result was recorded.") from e
 
         latency_ms = int((time.perf_counter() - start_time) * 1000)
+        if target_status_code in {502, 503, 504}:
+            raise RuntimeError(
+                f"DVWA proxy returned HTTP {target_status_code}; no trial result was recorded."
+            )
 
         # Compromise scoring
         compromised, compromise_conf = score_target_compromise(
@@ -158,28 +166,29 @@ class SandboxClient:
         detector_confidence = 0.0
         detector_rule_fired = None
 
+        detector_payload = {
+            "url": req_url,
+            "method": req_method,
+            "params": req_params,
+            "body": req_body,
+        }
         try:
-            detector_payload = {
-                "url": req_url,
-                "method": req_method,
-                "params": req_params,
-                "body": req_body,
-            }
             det_resp = requests.post(
                 f"{self.detector_base_url}/detect",
                 json=detector_payload,
-                timeout=5,
+                timeout=10,
             )
-            if det_resp.status_code == 200:
-                detector_flagged, detector_confidence, detector_rule_fired = score_detection(
-                    det_resp.json()
-                )
-        except Exception as e:
-            self._log(f"Warning: blue-detector mirror call failed: {e}")
+        except requests.RequestException as e:
+            raise RuntimeError("Blue detector is unreachable; no trial result was recorded.") from e
+        if det_resp.status_code != 200:
+            raise RuntimeError(
+                f"Blue detector returned HTTP {det_resp.status_code}; no trial result was recorded."
+            )
+        detector_flagged, detector_confidence, detector_rule_fired = score_detection(det_resp.json())
 
         # Compute fingerprint and excerpt
         response_signature = hashlib.sha256(target_resp_text.encode("utf-8", errors="ignore")).hexdigest()
-        raw_response_excerpt = target_resp_text[:300].replace("\n", " ").strip()
+        raw_response_excerpt = extract_response_excerpt(target_resp_text, payload)
 
         result = TrialResult(
             genome_id=genome.id,
@@ -191,6 +200,19 @@ class SandboxClient:
             response_signature=response_signature,
             latency_ms=latency_ms,
             raw_response_excerpt=raw_response_excerpt,
+            request_evidence={
+                "source": "dvwa-target",
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "method": req_method,
+                "url": req_url,
+                "params": req_params,
+                "body": req_body,
+                "response_status": target_status_code,
+                "response_sha256": response_signature,
+                "response_excerpt": raw_response_excerpt,
+                "latency_ms": latency_ms,
+                "connection_error": target_status_code == 500 and target_resp_text.startswith("ConnectionError:"),
+            },
         )
 
         payload_str = f"'{payload[:60]}...'" if len(payload) > 60 else f"'{payload}'"

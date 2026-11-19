@@ -1,5 +1,7 @@
 import re
 from typing import Any, Optional
+import html
+import urllib.parse
 
 
 # SQLi signature patterns in responses
@@ -17,9 +19,7 @@ SQLI_ERROR_PATTERNS = [
 CMD_OUTPUT_PATTERNS = [
     r"uid=\d+\([a-zA-Z0-9_\-]+\)\s+gid=\d+",
     r"root:[x*]:0:0:",
-    r"Linux [a-zA-Z0-9_.\-]+",
     r"Microsoft Windows \[Version",
-    r"www-data",
 ]
 
 # Path traversal signatures
@@ -41,12 +41,8 @@ def score_target_compromise(response_text: str, status_code: int = 200, payload:
     """
     text_lower = response_text.lower()
 
-    # 1. SQL injection error signatures
-    for pattern in SQLI_ERROR_PATTERNS:
-        if re.search(pattern, text_lower):
-            return True, 0.95
-
-    # 1b. Multi-row dump signatures (DVWA SQLi extracts multiple records)
+    # A SQL parser error proves an input reached a parser, not that data was
+    # compromised. Only a result dump counts as a compromise signal here.
     if "first name:" in text_lower and text_lower.count("surname:") > 1:
         return True, 0.98
 
@@ -54,25 +50,60 @@ def score_target_compromise(response_text: str, status_code: int = 200, payload:
     for pattern in CMD_OUTPUT_PATTERNS:
         if re.search(pattern, response_text):
             return True, 1.0
+    if "whoami" in payload.lower() and re.search(
+        r"<pre[^>]*>[^<]*ping[\s\S]*?\nwww-data\n</pre>", response_text, re.IGNORECASE
+    ):
+        return True, 1.0
 
     # 3. Path traversal signatures
     for pattern in PATH_TRAVERSAL_PATTERNS:
         if re.search(pattern, response_text):
             return True, 1.0
 
-    # 4. Reflected XSS heuristics (unescaped script tags or payload reflection)
-    xss_tokens = ["<script>", "<script ", "alert(", "onerror=", "onload=", "onfocus="]
-    if any(t in text_lower for t in xss_tokens):
-        if payload and payload.lower() in text_lower:
-            return True, 0.95
-        return True, 0.75
-
-    if payload and len(payload) > 5 and payload in response_text:
-        # Reflected payload in 200 response without error
-        if status_code == 200 and "error" not in text_lower:
-            return True, 0.5
+    # Reflected text is not by itself an XSS compromise. Require an executable
+    # HTML/script structure from the submitted payload to appear unescaped.
+    payload_variants = {
+        payload.lower(),
+        urllib.parse.unquote(payload).lower(),
+        html.unescape(urllib.parse.unquote(payload)).lower(),
+    }
+    executable_markers = ("<script", "<img", "<svg", "<iframe", "onerror=", "onload=", "onfocus=", "javascript:")
+    response_lower = text_lower
+    if any(
+        marker in variant and variant and variant in response_lower
+        for variant in payload_variants
+        for marker in executable_markers
+    ):
+        return True, 0.95
 
     return False, 0.0
+
+
+def extract_response_excerpt(response_text: str, payload: str = "", limit: int = 300) -> str:
+    """Keep response context around the payload or a concrete compromise marker."""
+    lower = response_text.lower()
+    markers = ["uid=", "root:x:0:0:", "root:*:0:0:", "first name:", "microsoft windows [version"]
+    if "whoami" in payload.lower():
+        markers.insert(0, "www-data")
+    for marker in markers:
+        position = lower.find(marker)
+        if position >= 0:
+            break
+    else:
+        position = -1
+    candidates = (payload, urllib.parse.unquote(payload), html.unescape(urllib.parse.unquote(payload)))
+    if position < 0:
+        position = next((lower.find(candidate.lower()) for candidate in candidates if candidate and lower.find(candidate.lower()) >= 0), -1)
+    if position < 0:
+        for marker in ("root:x:0:0:", "uid=", "first name:", "<script", "<img", "onerror="):
+            position = lower.find(marker)
+            if position >= 0:
+                break
+    if position < 0:
+        position = 0
+    start = max(0, position - limit // 3)
+    excerpt = response_text[start:start + limit]
+    return " ".join(excerpt.split())
 
 
 def score_detection(detector_response: dict[str, Any]) -> tuple[bool, float, Optional[str]]:

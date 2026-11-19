@@ -5,7 +5,9 @@ import yaml
 
 from cyberranger.archive import Archive
 from cyberranger.behavior import compute_behavior_descriptor
+from cyberranger.auto_triage import AutoTriageVerifier
 from cyberranger.blue_learner import BlueLearner
+from cyberranger.corpus import TrafficCorpus
 from cyberranger.hall_of_fame import HallOfFame
 from cyberranger.metrics import MetricsLogger
 from cyberranger.operators.bandit import OperatorBandit
@@ -24,8 +26,8 @@ class OrchestratorConfig:
     network_name: str = "cyberranger_internal"
     target_service: str = "dvwa-target"
     detector_service: str = "blue-detector"
-    target_url: str = "http://127.0.0.1:8080"
-    detector_url: str = "http://127.0.0.1:8000"
+    target_url: str = "http://dvwa-target"
+    detector_url: str = "http://blue-detector:8000"
     offspring_per_gen: int = 4
     max_generations: int = 1000
     bandit_arms: list[str] = field(default_factory=lambda: ["grammar", "crossover", "llm_semantic"])
@@ -33,7 +35,8 @@ class OrchestratorConfig:
     regression_floor: float = 0.9
     metrics_interval: int = 5
     scaling_check_interval: int = 20
-    total_possible_cells: int = 375  # 5*5*5*3 from default config
+    total_possible_cells: int = 300  # 4*5*5*3 from active DVWA classes
+    llm_model: str = "gemini-4-hydrogen"
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str) -> "OrchestratorConfig":
@@ -46,7 +49,7 @@ class OrchestratorConfig:
             * len(archive_cfg.get("injection_point_categories", []))
             * len(archive_cfg.get("evasion_techniques", []))
             * len(archive_cfg.get("detector_outcomes", []))
-        ) or 375
+        ) or 300
 
         return cls(
             network_name=raw.get("sandbox", {}).get("network_name", "cyberranger_internal"),
@@ -60,6 +63,7 @@ class OrchestratorConfig:
             metrics_interval=raw.get("metrics", {}).get("metrics_interval", 5),
             scaling_check_interval=raw.get("metrics", {}).get("scaling_check_interval", 20),
             total_possible_cells=total_cells,
+            llm_model=raw.get("llm", {}).get("model", "gemini-4-hydrogen"),
         )
 
 
@@ -69,10 +73,11 @@ class Orchestrator:
     def __init__(self, config: Optional[OrchestratorConfig] = None):
         self.config = config or OrchestratorConfig()
         self.persistence = PersistenceStore()
+        self.corpus = TrafficCorpus()
         self.archive = Archive(persistence_store=self.persistence)
         self.grammar_op = GrammarOperator()
         self.crossover_op = CrossoverOperator(self.grammar_op)
-        self.llm_op = LLMSemanticOperator(grammar_operator=self.grammar_op)
+        self.llm_op = LLMSemanticOperator(model=self.config.llm_model, grammar_operator=self.grammar_op)
         self.bandit = OperatorBandit(self.config.bandit_arms)
         self.population = Population(self.grammar_op)
         self.sandbox = SandboxClient(
@@ -81,9 +86,12 @@ class Orchestrator:
             log_to_stdout=True,
         )
         self.triage_queue = TriageQueue(persistence_store=self.persistence)
+        self.auto_verifier = AutoTriageVerifier()
+        self.auto_triage_enabled = True
         self.blue_learner = BlueLearner(detector_api_url=self.config.detector_url)
         self.hall_of_fame = HallOfFame(persistence_store=self.persistence)
         self.metrics = MetricsLogger()
+        self.recent_feedback: list[dict[str, Any]] = []
 
     def load_checkpoint(self) -> Optional[int]:
         """Restore latest checkpoint from database into population and bandit."""
@@ -107,6 +115,7 @@ class Orchestrator:
                 child = self.crossover_op.crossover(p, other)
             elif arm == "llm_semantic":
                 summary = self.archive.summary_for_llm()
+                summary["recent_feedback"] = self.recent_feedback[-10:]
                 child = self.llm_op.mutate_from_archive(summary, parents=[p])
             else:
                 child = self.grammar_op.mutate(p)
@@ -122,6 +131,27 @@ class Orchestrator:
         step_events = []
         for genome in offspring:
             result = self.sandbox.fire(genome)
+            if result.request_evidence:
+                verified_label = (
+                    "malicious"
+                    if result.target_compromised and result.compromise_confidence >= 0.98
+                    else None
+                )
+                self.corpus.record_observation(
+                    genome.id,
+                    result.request_evidence,
+                    label=verified_label,
+                    label_source="deterministic_response_verifier" if verified_label else None,
+                    reviewer_id="response_evidence_rules" if verified_label else None,
+                )
+            self.recent_feedback.append({
+                "vuln_class": genome.vuln_class.value,
+                "evasion_technique": genome.evasion_technique.value,
+                "target_response_signal": "candidate_signal" if result.target_compromised else "no_candidate_signal",
+                "detector_response": "flagged" if result.detector_flagged else "not_flagged",
+                "detector_confidence": round(result.detector_confidence, 3),
+                "response_signature": result.response_signature,
+            })
             fitness = combined_fitness(result.compromise_confidence, result.detector_confidence)
             descriptor = compute_behavior_descriptor(genome, result)
             outcome = self.archive.try_insert(genome, result, descriptor, fitness)
@@ -133,6 +163,22 @@ class Orchestrator:
             triage_item = None
             if outcome != "rejected":
                 triage_item = self.triage_queue.enqueue(genome, result, descriptor, outcome, fitness)
+                if self.auto_triage_enabled and triage_item:
+                    decision, rev_id, rev_note = self.auto_verifier.evaluate_result(
+                        genome, result, fitness, outcome
+                    )
+                    self.triage_queue.update_status(
+                        triage_item.id,
+                        new_status=decision,
+                        reviewer_note=rev_note,
+                        reviewer_id=rev_id,
+                    )
+                    if decision == "confirmed":
+                        self.hall_of_fame.archive_red_elite(
+                            genome,
+                            generation=self.population.gen,
+                            confirmed_by=rev_id,
+                        )
 
             step_events.append({
                 "genome_id": genome.id,
@@ -144,6 +190,7 @@ class Orchestrator:
                 "compromise_conf": result.compromise_confidence,
                 "detector_flagged": result.detector_flagged,
                 "triage_id": triage_item.id if triage_item else None,
+                "triage_status": triage_item.status if triage_item else None,
             })
 
         self.population.advance_generation(offspring)
@@ -157,6 +204,14 @@ class Orchestrator:
             "archive_coverage": self.archive.coverage(self.config.total_possible_cells),
             "qd_score": round(self.archive.qd_score(), 3),
         }
+
+    def auto_triage_pending(self) -> dict[str, int]:
+        """Automatically process all pending triage items and archive confirmed Red Elites."""
+        return self.auto_verifier.auto_triage_all(
+            triage_queue=self.triage_queue,
+            hall_of_fame=self.hall_of_fame,
+            generation=self.population.gen,
+        )
 
     def learning_pass(self) -> dict[str, Any]:
         """Execute blue detector retraining on confirmed triage items (§11)."""

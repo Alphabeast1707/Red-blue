@@ -2,16 +2,20 @@ import json
 import os
 import random
 import re
+import requests
 from typing import Any, Optional
 
-from cyberranger.genome import EvasionTechnique, Genome, VulnClass
+from cyberranger.genome import EvasionTechnique, Genome, SUPPORTED_DVWA_CLASSES, VulnClass
 from cyberranger.operators.grammar import GrammarOperator
 
 SYSTEM_PROMPT = """You are proposing new attack STRUCTURES (not payloads) for an
-authorized security research system attacking an isolated, intentionally-vulnerable
-DVWA instance. Given the current archive coverage (which vulnerability classes,
-injection points, and evasion technique combinations are already well-explored),
-propose a new structural approach not yet represented. Output JSON only:
+authorized security research system attacking only its isolated, intentionally-vulnerable
+DVWA instance. Given archive coverage and recent abstract target/detector outcomes,
+adapt toward under-explored families and techniques. The feedback contains only
+deterministic summaries of observed responses; do not invent evidence or claim a
+confirmed vulnerability. Propose a new structural approach not yet represented.
+Never emit a literal payload, exploit code, or instructions for attacking other targets.
+Output JSON only:
 {"vuln_class": ..., "injection_point_category": ..., "evasion_technique": ...,
  "structural_description": "abstract description of the technique, no literal payload",
  "rationale": "why this is likely to be a distinct niche from what's covered"}
@@ -33,28 +37,58 @@ def propose_new_strategy(
 ) -> dict[str, Any]:
     """Call LLM API to propose an abstract structural attack strategy (§5).
     
-    If client is provided or ANTHROPIC_API_KEY is available, calls Anthropic API.
+    If client is provided, calls that compatible client. If a local Gemini strategy
+    proxy is configured, it sends only a validated coarse archive summary there.
+    Anthropic remains available as an optional legacy provider.
     Otherwise, falls back to a deterministic heuristic explorer for under-explored niches.
     """
     if client is not None or os.environ.get("ANTHROPIC_API_KEY"):
-        if client is None:
+        if client is None and os.environ.get("ANTHROPIC_API_KEY"):
             import anthropic
             client = anthropic.Anthropic()
+        if client is not None:
+            response = client.messages.create(
+                model=model,
+                max_tokens=500,
+                system=SYSTEM_PROMPT,
+                messages=[{
+                    "role": "user",
+                    "content": f"Current archive coverage:\n{json.dumps(archive_summary, indent=2)}",
+                }],
+            )
+            return parse_json(response.content[0].text)
 
-        response = client.messages.create(
-            model=model,
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": f"Current archive coverage:\n{json.dumps(archive_summary, indent=2)}",
-            }],
-        )
-        return parse_json(response.content[0].text)
+    gemini_url = os.environ.get("GEMINI_STRATEGY_URL")
+    gemini_token = os.environ.get("GEMINI_STRATEGY_TOKEN")
+    if gemini_url and gemini_token:
+        # Do not send the response digest or any request/response text off-box.
+        safe_summary = {
+            "total_filled_cells": archive_summary.get("total_filled_cells", 0),
+            "qd_score": archive_summary.get("qd_score", 0),
+            "distribution": archive_summary.get("distribution", {}),
+            "recent_feedback": [
+                {key: item.get(key) for key in (
+                    "vuln_class", "evasion_technique", "target_response_signal",
+                    "detector_response", "detector_confidence",
+                )}
+                for item in archive_summary.get("recent_feedback", [])[-10:]
+            ],
+        }
+        try:
+            response = requests.post(
+                gemini_url.rstrip("/") + "/strategy",
+                json=safe_summary,
+                headers={"Authorization": f"Bearer {gemini_token}"},
+                timeout=60,
+            )
+            response.raise_for_status()
+            return response.json()
+        except (requests.RequestException, ValueError) as exc:
+            print(f"[LLM Semantic] Gemini planner unavailable; using local heuristic ({type(exc).__name__}).")
 
     # Offline / Test fallback: identify under-explored combinations
     explored_combos = set(archive_summary.get("distribution", {}).keys())
-    all_vulns = [v.value for v in VulnClass]
+    all_vulns = [v.value for v in SUPPORTED_DVWA_CLASSES]
     all_categories = ["auth_form", "search", "url_param", "file_upload", "cookie"]
     all_evasions = [e.value for e in EvasionTechnique]
 
@@ -107,6 +141,8 @@ class LLMSemanticOperator:
         try:
             vuln_class = VulnClass(proposal.get("vuln_class", "sqli"))
         except ValueError:
+            vuln_class = VulnClass.SQLI
+        if vuln_class not in SUPPORTED_DVWA_CLASSES:
             vuln_class = VulnClass.SQLI
 
         try:

@@ -2,7 +2,7 @@ import random
 from typing import Optional
 
 from cyberranger.archive import Archive
-from cyberranger.genome import EvasionTechnique, Genome, VulnClass
+from cyberranger.genome import EvasionTechnique, Genome, SUPPORTED_DVWA_CLASSES, VulnClass
 from cyberranger.operators.grammar import GrammarOperator
 
 
@@ -18,7 +18,7 @@ class Population:
 
     def _initialize_seeds(self):
         """Seed population with baseline genomes across all vulnerability classes."""
-        for vuln in VulnClass:
+        for vuln in SUPPORTED_DVWA_CLASSES:
             g = self.grammar.generate_initial_genome(vuln, injection_point="default.param")
             self.individuals.append(g)
 

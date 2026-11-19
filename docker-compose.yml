@@ -2,6 +2,8 @@ networks:
   cyberranger_internal:
     name: cyberranger_internal
     internal: true   # no route to the outside — this is the load-bearing line
+  gemini_egress: {}
+  ui_ingress: {}
 
 services:
   dvwa-target:
@@ -16,13 +18,70 @@ services:
       - cyberranger_internal
     volumes:
       - ./blue_detector/models:/app/models   # swapped by blue_learner after retraining
+    environment:
+      LAYA_MODEL_PATH: /app/models/laya
+      LAYA_FINETUNED_MODEL_PATH: /app/models/laya-finetuned
 
-  dev-proxy:
-    image: alpine/socat
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8000:8000"
-    entrypoint: ["sh", "-c", "socat TCP-LISTEN:8080,fork,reuseaddr TCP:dvwa-target:80 & socat TCP-LISTEN:8000,fork,reuseaddr TCP:blue-detector:8000 & wait"]
+  cyberranger-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    command: ["sleep", "infinity"]
     networks:
-      - default
       - cyberranger_internal
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+      - ./blue_detector/models:/workspace/blue_detector/models
+    working_dir: /workspace
+    environment:
+      GEMINI_STRATEGY_URL: http://gemini-strategy-proxy:8001
+      GEMINI_STRATEGY_TOKEN: ${GEMINI_PROXY_TOKEN-}
+    depends_on:
+      - dvwa-target
+      - blue-detector
+      - gemini-strategy-proxy
+
+  triage-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    command: ["python", "scripts/cyberranger_cli.py", "serve", "--host", "0.0.0.0", "--port", "8501"]
+    networks:
+      - cyberranger_internal
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data
+      - ./blue_detector/models:/workspace/blue_detector/models
+    working_dir: /workspace
+    environment:
+      GEMINI_STRATEGY_URL: http://gemini-strategy-proxy:8001
+    depends_on:
+      - dvwa-target
+      - blue-detector
+      - gemini-strategy-proxy
+
+  ui-gateway:
+    image: nginx:alpine
+    networks:
+      - cyberranger_internal
+      - ui_ingress
+    ports:
+      - "127.0.0.1:8501:8501"
+    volumes:
+      - ./triage_ui/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - triage-ui
+
+  gemini-strategy-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile.gemini-proxy
+    networks:
+      - cyberranger_internal
+      - gemini_egress
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY-}
+      GEMINI_PROXY_TOKEN: ${GEMINI_PROXY_TOKEN-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-4-hydrogen}
+    command: ["uvicorn", "gemini_proxy:app", "--host", "0.0.0.0", "--port", "8001"]

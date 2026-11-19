@@ -1,0 +1,8 @@
+FROM python:3.11-slim
+
+WORKDIR /workspace
+
+RUN pip install --no-cache-dir torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir pyyaml requests pydantic scikit-learn fastapi uvicorn anthropic laya==0.4.32
+
+CMD ["sleep", "infinity"]

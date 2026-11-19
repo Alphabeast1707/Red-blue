@@ -1,0 +1,136 @@
+CyberRanger: Adversarial Red/Blue Co-Evolution
+for Adaptive Intrusion Detection
+Progress Review:  LLM Red vs Blue: Closed Learning Loop
+Program Name: B.tech CSE AIML
+202307020022 Harshit Chaudhary
+             202307020006 Aditiya Barasiya
+202307020104 Saumyya Dalal
+202307020125 Vedant Thakker
+202307020120 Abhi Tiwari
+Mentor: Vaibhav Tiwari Sir
+Team Name: Xerjoff
+1
+
+Agenda
+Why we built this: The problem
+How CyberRanger compares to what already exists
+Objectives
+What we built today 
+Live demo and results from today's run
+Timeline of  where we are and what comes next
+Conclusion and future scope
+2
+
+Why We Built This
+Most security tools only recognise attacks they have already seen before.
+Change a few characters in an attack, and it walks straight past them.
+Companies hire experts to test their defences, but only once or twice a year  the rest of the year is a blind spot.
+Real attack data is expensive to collect, and whatever exists goes stale quickly.
+Our idea: let an attacker AI and a defender AI fight each other non-stop, so the defender keeps meeting attacks nobody has seen before.
+3
+
+How We Compare to What Already Exists
+Approach
+What it does well
+Where it falls short
+Firewalls / WAFs
+(e.g. ModSecurity)
+Blocks attacks that match a known pattern
+Blind to anything new or disguised
+Manual penetration
+testing
+Skilled humans find genuine flaws
+Expensive, and happens only once or twice a year
+Automated scanners
+(sqlmap, ZAP)
+Fires a large list of known attacks quickly
+The list never grows on its own
+Public attack datasets
+Useful for training detection models
+Frozen in time  attackers move on
+CyberRanger (ours)
+Two LLMs fight continuously — the attacker finds and verifies real vulnerabilities, the defender learns to block them, and every round becomes labeled training data
+Uses known attack classes with LLM-chosen evasions, not novel zero-days; RL automation and real-app breadth are the next steps
+4
+
+Objectives
+Sandboxed Cyber Range: Built an isolated, controlled environment for safely simulating adversarial security testing without impacting production systems.
+Autonomous Red-Team Agent: Developed an LLM-driven attacker that generates exploit payloads, applies evasion techniques, validates outcomes via HTTP responses, and adapts to defensive countermeasures.
+Adaptive Blue-Team WAF: Implemented an LLM-powered defense engine that inspects requests inline, detects malicious payloads, and dynamically generates mitigation rules.
+Orchestration Engine: Built a round-based controller to coordinate attack–defense iterations, manage state transitions, and capture reproducible execution traces.
+Automated Ground-Truth Collection: Created a structured corpus pipeline recording payloads, attack techniques, verified breaches, and detection verdicts for continuous model improvement.
+ML-Based Detection Benchmarking: Trained a character n-gram + logistic regression classifier, achieving 94% recall on unseen evasion techniques vs. 33% for static signatures in proof-of-concept testing.
+Reproducible Evaluation Dashboard: Developed an interactive dashboard for visualizing attack progression, defense adaptation, vulnerability remediation, and detection metrics, with offline session replay.
+5
+
+What We Did Today
+Modular Architecture: Re-architected the monolith into modular components for Azure integration, LLM attack/defence, target environments, corpus collection, and configuration.
+Fault-Tolerant Design: Implemented graceful fallbacks for LLM failures using scripted payload mutators and regex-based signatures.
+Offline Replay System: Built a record-and-replay mechanism for network-independent demos using record_session.py, golden.jsonl, and ARENA_REPLAY.
+Automated Data Flywheel: Created an auto-labelled training corpus capturing payloads, attack techniques, breach ground truth, and detection verdicts.
+ML-Based Detection: Trained a lightweight character n-gram and logistic regression classifier, achieving 94% recall on unseen evasion techniques vs. 33% with static signatures in a proof of concept.
+Adaptive AI Red-Blue Loop: Developed an LLM-powered pentester and adaptive WAF that discover vulnerabilities, validate attacks through HTTP responses, block requests, and deploy patches dynamically.
+Interactive Research Dashboard: Redesigned the frontend with attack-defence visualisations, evidence-backed findings, live corpus metrics, and a responsive research-lab interface.
+
+6
+
+Red Agent: How It Chooses, Evolves and Confirms Attacks
+LLM Attack Planner — Each round the attacker (Azure gpt-6-luna) reads how the defender just responded and chooses which vulnerability family to press and which evasion technique to apply. It plans strategy only — it never writes raw exploit code.
+Five Deterministic Evasion Transforms — A tool turns each plan into a real payload by transforming the standard DVWA attack strings: case-flipping, inline-comment injection, URL encoding, double encoding, and vector pivoting. Safe and reproducible; no external data feed.
+Grounded Verification — After every un-blocked probe the attacker reads the target's actual HTTP response and confirms what it achieved — leaked data, command output, file contents. A finding backed by evidence, not a guess.
+Feedback-Driven Adaptation — The next wave is conditioned on the last: families that breached are pressed harder; families that were blocked trigger a technique switch or a pivot to whatever is still open. The attack stream genuinely escalates against this defender.
+No Raw Exploit Synthesis (by design) — A well-aligned model refuses to author novel exploit code, and we do not bypass that. The attacker's intelligence is in adaptation and verification of known attack classes — not in inventing new zero-days.
+Graceful Fallback — If the model is unreachable, the attacker falls back to scripted mutation operators for that round, so a live run never stalls.
+
+
+The Dashboard: Live Demo
+9
+
+Per-module Responsibility
+10
+
+Closing the Loop: Arena Data Trains the Detector
+Teacher (LLM) labels the data → student learns it. Student here is a lightweight model; in production it is Laya (open 421M decision model). Next: fine-tune Laya on the full corpus, then RL.
+
+Tech Stack
+
+
+- Backend: Python 3.10+, FastAPI, Uvicorn, Requests
+- Frontend: React 19, TypeScript, Vite 8, Tailwind CSS 4, shadcn/ui, Recharts, Framer Motion
+- Real-time: Server-Sent Events (SSE)
+- Target Environment: DVWA (Damn Vulnerable Web App) in Docker
+- Attack Vectors: SQL Injection, XSS, Command Injection, Path Traversal
+- Package Manager: uv
+- Terminal UI: Rich, Colorama
+
+12
+
+Timeline :  Where We Are and What's Next
+Stage
+What it covers
+Status
+Stage 1
+Working arena: attacker, defender, referee and live dashboard
+Done today
+Stage 2–3
+LLMs reason on both sides — attacker plans & verifies, defender blocks & patches
+Done
+Stage 4–5
+Defender learns inline; detector trained on arena data (94% vs 33% on unseen evasions)
+Done
+Stage 6–8
+Harder attacks, longer runs, full evaluation and final report
+Planned
+Stages 1–3 are done and the learning loop is closed end to end — what remains is automation (RL), broader attacks, and scale.
+13
+
+Conclusion & Future Scope
+We have a complete, working arena where an LLM attacker and an LLM defender genuinely fight against a real vulnerable site — not a mock-up.
+The attacker discovers and confirms vulnerabilities from real responses; the defender blocks inline and learns a new patch for every breach it sees.
+Every exchange is auto-labeled into a corpus, and a detector trained on it catches 94% of unseen evasions versus 33% for static rules — the loop is closed end to end.
+The production detector is Laya, an open 421M decision model; fine-tuning it on the full corpus and automating the retrain with RL are the next steps.
+Longer term: more vulnerability classes and real apps, one shared model calibrated per environment, and releasing the labeled dataset and benchmark.
+14
+
+Thank You!
+15

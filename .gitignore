@@ -8,8 +8,18 @@ build/
 .coverage
 htmlcov/
 *.log
+.env
+.env.*
+!.env.example
 checkpoints.db
 metrics.jsonl
 *.joblib
 .DS_Store
+blue_detector/models/laya/
+blue_detector/models/laya-*/
+data/
+.venv-model/
+.venv-laya/
+.venv/
+
 
